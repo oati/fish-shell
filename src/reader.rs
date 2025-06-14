@@ -690,7 +690,6 @@ pub fn reader_read(parser: &Parser, fd: RawFd, io: &IoChain) -> Result<(), Error
 /// Read interactively. Read input from stdin while providing editing facilities.
 fn read_i(parser: &Parser) {
     assert_is_main_thread();
-    parser.assert_can_execute();
     let mut conf = ReaderConfig::default();
     conf.event = L!("fish_prompt");
     conf.complete_ok = true;
@@ -2110,11 +2109,12 @@ impl ReaderData {
         precision: JumpPrecision,
         elt: EditableLineTag,
         target: char,
+        skip_till: bool,
     ) -> bool {
         self.last_jump_target = Some(target);
         self.last_jump_direction = direction;
         self.last_jump_precision = precision;
-        self.jump(direction, precision, elt, vec![target])
+        self.jump(direction, precision, elt, vec![target], skip_till)
     }
 
     fn jump(
@@ -2123,12 +2123,16 @@ impl ReaderData {
         precision: JumpPrecision,
         elt: EditableLineTag,
         targets: Vec<char>,
+        skip_till: bool,
     ) -> bool {
         let el = self.edit_line(elt);
 
         match direction {
             JumpDirection::Backward => {
                 let mut tmp_pos = el.position();
+                if precision == JumpPrecision::Till && skip_till && tmp_pos > 0 {
+                    tmp_pos -= 1;
+                }
 
                 loop {
                     if tmp_pos == 0 {
@@ -2146,6 +2150,10 @@ impl ReaderData {
             }
             JumpDirection::Forward => {
                 let mut tmp_pos = el.position() + 1;
+                if precision == JumpPrecision::Till && skip_till && tmp_pos < el.len() - 1 {
+                    tmp_pos += 1;
+                }
+
                 while tmp_pos < el.len() {
                     if targets.iter().any(|&target| el.at(tmp_pos) == target) {
                         if precision == JumpPrecision::Till {
@@ -3689,7 +3697,7 @@ impl<'a> Reader<'a> {
                 let (elt, _el) = self.active_edit_line();
                 if let Some(target) = self.function_pop_arg() {
                     let success =
-                        self.jump_and_remember_last_jump(direction, precision, elt, target);
+                        self.jump_and_remember_last_jump(direction, precision, elt, target, false);
 
                     self.input_data.function_set_status(success);
                 }
@@ -3746,7 +3754,13 @@ impl<'a> Reader<'a> {
                         )
                     }
                     // If we stand on non-bracket character, we prefer to jump forward
-                    None => self.jump(JumpDirection::Forward, precision, elt, r_brackets.to_vec()),
+                    None => self.jump(
+                        JumpDirection::Forward,
+                        precision,
+                        elt,
+                        r_brackets.to_vec(),
+                        false,
+                    ),
                 };
                 self.input_data.function_set_status(success);
             }
@@ -3760,6 +3774,7 @@ impl<'a> Reader<'a> {
                         self.data.last_jump_precision,
                         elt,
                         target,
+                        true,
                     );
                 }
 
@@ -3782,6 +3797,7 @@ impl<'a> Reader<'a> {
                         self.data.last_jump_precision,
                         elt,
                         last_target,
+                        true,
                     );
                 }
 
@@ -5885,7 +5901,7 @@ fn try_expand_wildcard(
     const TAB_COMPLETE_WILDCARD_MAX_EXPANSION: usize = 256;
 
     let ctx = OperationContext::background_with_cancel_checker(
-        &*parser.variables,
+        &parser.variables,
         Box::new(|| signal_check_cancel() != 0),
         TAB_COMPLETE_WILDCARD_MAX_EXPANSION,
     );
